@@ -1,0 +1,5 @@
+*.prof
+*.pdf
+.bin
+*.log
+*.out
