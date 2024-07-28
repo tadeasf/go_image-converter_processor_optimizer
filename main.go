@@ -101,7 +101,7 @@ func main() {
 		Flags: []cli.Flag{
 			&cli.IntFlag{
 				Name:  "workers",
-				Value: 10,
+				Value: 8,
 				Usage: "Number of worker goroutines",
 			},
 		},

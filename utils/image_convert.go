@@ -49,7 +49,7 @@ func convertAndOptimizeSingleFile(inputPath, format string) error {
 	// Encode and optimize based on the chosen format
 	switch format {
 	case "jpg":
-		err = imaging.Save(img, outputPath, imaging.JPEGQuality(85))
+		err = imaging.Save(img, outputPath, imaging.JPEGQuality(100))
 	case "png":
 		err = imaging.Save(img, outputPath, imaging.PNGCompressionLevel(png.BestCompression))
 	case "webp":
