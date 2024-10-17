@@ -1,8 +1,8 @@
 package utils
 
 import (
-	"fmt"
 	"io/fs"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,10 +36,19 @@ func GetImageFiles(root string, recursive bool) ([]string, error) {
 	return files, err
 }
 
-func ProcessFiles(files []string, resultsChan chan<- string, numWorkers int, format, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) tea.Cmd {
+type ProcessResult struct {
+	SuccessCount int
+	FailCount    int
+	FailedFiles  []string
+}
+
+func ProcessFiles(files []string, resultsChan chan<- ProcessResult, numWorkers int, format, outputDir string, webpQuality int, verbose bool, noLimit bool) tea.Cmd {
 	return func() tea.Msg {
+		log.Printf("ProcessFiles function started with %d files", len(files))
 		var wg sync.WaitGroup
 		semaphore := make(chan struct{}, numWorkers)
+		result := ProcessResult{}
+		var resultMutex sync.Mutex
 
 		for _, file := range files {
 			wg.Add(1)
@@ -48,16 +57,27 @@ func ProcessFiles(files []string, resultsChan chan<- string, numWorkers int, for
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
 
-				err := ConvertImage(file, format, outputDir, webpQuality, fileNameMutex)
+				log.Printf("Processing file: %s", file)
+				err := ConvertImage(file, format, outputDir, webpQuality, verbose, noLimit)
+				resultMutex.Lock()
 				if err != nil {
-					fmt.Printf("Error processing %s: %v\n", file, err)
+					log.Printf("Error processing %s: %v", file, err)
+					result.FailCount++
+					result.FailedFiles = append(result.FailedFiles, file)
+				} else {
+					log.Printf("Successfully processed %s", file)
+					result.SuccessCount++
 				}
-				resultsChan <- file
+				resultMutex.Unlock()
 			}(file)
 		}
 
+		log.Printf("Waiting for all goroutines to complete")
 		wg.Wait()
+		log.Printf("All goroutines completed. Sending result: %+v", result)
+		resultsChan <- result
 		close(resultsChan)
-		return nil
+		log.Printf("ResultsChan closed")
+		return result
 	}
 }

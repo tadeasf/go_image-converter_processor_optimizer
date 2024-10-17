@@ -6,8 +6,6 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"runtime/pprof"
-	"runtime/trace"
 	"strings"
 	"time"
 
@@ -15,43 +13,46 @@ import (
 
 	"strconv"
 
-	"sync"
+	"io"
 
 	"github.com/c-bata/go-prompt"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/urfave/cli/v2"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type model struct {
-	spinner       spinner.Model
-	files         []string
-	current       int
-	done          bool
-	resultsChan   chan string
-	numWorkers    int
-	format        string
-	outputDir     string
-	webpQuality   int
-	fileNameMutex *sync.Mutex
+	spinner     spinner.Model
+	files       []string
+	done        bool
+	resultsChan chan utils.ProcessResult
+	numWorkers  int
+	format      string
+	outputDir   string
+	webpQuality int
+	verbose     bool
+	noLimit     bool
+	result      utils.ProcessResult
 }
 
 type tickMsg time.Time
 
-func initialModel(files []string, numWorkers int, format string, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) model {
+func initialModel(files []string, numWorkers int, format string, outputDir string, webpQuality int, verbose bool, noLimit bool) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	return model{
-		spinner:       s,
-		files:         files,
-		resultsChan:   make(chan string, len(files)),
-		numWorkers:    numWorkers,
-		format:        format,
-		outputDir:     outputDir,
-		webpQuality:   webpQuality,
-		fileNameMutex: fileNameMutex,
+		spinner:     s,
+		files:       files,
+		resultsChan: make(chan utils.ProcessResult, len(files)),
+		numWorkers:  numWorkers,
+		format:      format,
+		outputDir:   outputDir,
+		webpQuality: webpQuality,
+		verbose:     verbose,
+		noLimit:     noLimit,
 	}
 }
 
@@ -62,18 +63,25 @@ func tickCmd() tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
+	log.Printf("Model Init called")
 	return tea.Batch(
 		m.spinner.Tick,
-		utils.ProcessFiles(m.files, m.resultsChan, m.numWorkers, m.format, m.outputDir, m.webpQuality, m.fileNameMutex),
+		func() tea.Msg {
+			log.Printf("Starting file processing")
+			go utils.ProcessFiles(m.files, m.resultsChan, m.numWorkers, m.format, m.outputDir, m.webpQuality, m.verbose, m.noLimit)()
+			log.Printf("File processing started in background")
+			return tickMsg(time.Now())
+		},
 		tickCmd(),
 	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	log.Printf("Update called with message type: %T", msg)
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "q" || msg.String() == "ctrl+c" {
-			close(m.resultsChan)
+			log.Printf("Quit command received")
 			return m, tea.Quit
 		}
 	case spinner.TickMsg:
@@ -82,16 +90,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tickMsg:
 		select {
-		case _, ok := <-m.resultsChan:
+		case result, ok := <-m.resultsChan:
 			if !ok {
+				log.Printf("resultsChan closed")
 				m.done = true
 				return m, tea.Quit
 			}
-			m.current++
-			return m, tea.Batch(m.spinner.Tick, tickCmd())
+			log.Printf("Received result from channel: %+v", result)
+			m.result = result
+			m.done = true
+			return m, tea.Quit
 		default:
 			return m, tickCmd()
 		}
+	case utils.ProcessResult:
+		log.Printf("Received ProcessResult: %+v", msg)
+		m.result = msg
+		m.done = true
+		return m, tea.Quit
 	}
 
 	var cmd tea.Cmd
@@ -101,12 +117,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	if m.done {
-		return fmt.Sprintf("Done! Processed %d files.\n", len(m.files))
+		totalFiles := m.result.SuccessCount + m.result.FailCount
+		successRate := float64(m.result.SuccessCount) / float64(totalFiles) * 100
+
+		output := fmt.Sprintf("Done! Processed %d files.\n", totalFiles)
+		output += fmt.Sprintf("Conversion success rate: %d/%d (%.2f%%)\n", m.result.SuccessCount, totalFiles, successRate)
+		output += fmt.Sprintf("Number of failed conversions: %d\n", m.result.FailCount)
+
+		configDir, _ := os.UserConfigDir()
+		logFile := filepath.Join(configDir, "go-image-converter", "image_optimizer.log")
+		output += fmt.Sprintf("Error log file location: %s\n", logFile)
+
+		if m.result.FailCount > 0 {
+			errorDir := filepath.Join(m.outputDir, "errors")
+			output += fmt.Sprintf("Failed conversions copied to: %s\n", errorDir)
+		}
+
+		return output
 	}
 	return fmt.Sprintf("%s Processing files...\n", m.spinner.View())
 }
 
 func main() {
+	log.Printf("Application started")
 	app := &cli.App{
 		Name:  "image-optimizer",
 		Usage: "Convert and optimize images",
@@ -116,9 +149,43 @@ func main() {
 				Value: runtime.NumCPU(),
 				Usage: "Number of worker goroutines",
 			},
+			&cli.BoolFlag{
+				Name:  "verbose",
+				Value: false,
+				Usage: "Enable verbose output",
+			},
+			&cli.BoolFlag{
+				Name:  "nolimit",
+				Value: false,
+				Usage: "Disable image resizing",
+			},
 		},
 		Action: func(c *cli.Context) error {
+			log.Printf("Starting application action")
 			startTime := time.Now()
+
+			// Set up logging
+			configDir, err := os.UserConfigDir()
+			if err != nil {
+				log.Fatal("Error getting user config directory:", err)
+			}
+			logDir := filepath.Join(configDir, "go-image-converter")
+			if err := os.MkdirAll(logDir, 0755); err != nil {
+				log.Fatal("Error creating log directory:", err)
+			}
+			logFile := filepath.Join(logDir, "image_optimizer.log")
+
+			log.SetOutput(&lumberjack.Logger{
+				Filename:   logFile,
+				MaxSize:    10, // megabytes
+				MaxBackups: 3,
+				MaxAge:     28, // days
+			})
+			log.Printf("Logging initialized")
+
+			log.Printf("Log file created at: %s", logFile)
+
+			verbose := c.Bool("verbose")
 
 			// Interactive input path selection
 			var inputDir string
@@ -149,8 +216,10 @@ func main() {
 
 			files, err := utils.GetImageFiles(inputDir, recursive)
 			if err != nil {
+				log.Printf("Error getting image files: %v", err)
 				return err
 			}
+			log.Printf("Found %d files to process", len(files))
 
 			numWorkers := c.Int("workers")
 			if numWorkers <= 0 {
@@ -167,66 +236,57 @@ func main() {
 				return err
 			}
 
-			// Create a mutex for thread-safe file naming
-			fileNameMutex := &sync.Mutex{}
+			noLimit := c.Bool("nolimit")
 
-			m := initialModel(files, numWorkers, format, outputDir, webpQuality, fileNameMutex)
+			log.Printf("Initializing model")
+			m := initialModel(files, numWorkers, format, outputDir, webpQuality, verbose, noLimit)
+
+			log.Printf("Starting tea program")
 			p := tea.NewProgram(m, tea.WithAltScreen())
 
-			// Open a log file
-			logFile, err := os.Create("image_optimizer.log")
-			if err != nil {
-				return err
-			}
-			defer logFile.Close()
-
-			// Set up logging
-			log.SetOutput(logFile)
-
-			// Start CPU profiling
-			f, err := os.Create("cpu.prof")
-			if err != nil {
-				log.Fatal(err)
-			}
-			if err := pprof.StartCPUProfile(f); err != nil {
-				log.Fatal("could not start CPU profile: ", err)
-			}
-			defer pprof.StopCPUProfile()
-
-			// Start tracing
-			traceFile, err := os.Create("trace.out")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer traceFile.Close()
-			if err := trace.Start(traceFile); err != nil {
-				log.Fatal("could not start tracing: ", err)
-			}
-			defer trace.Stop()
-
+			log.Printf("Running tea program")
 			if _, err := p.Run(); err != nil {
+				log.Printf("Error running tea program: %v", err)
+				logError(err, verbose)
 				return err
+			}
+
+			log.Printf("Tea program completed")
+
+			// Copy failed files to errors directory
+			if m.result.FailCount > 0 {
+				errorDir := filepath.Join(outputDir, "errors")
+				if err := os.MkdirAll(errorDir, 0755); err != nil {
+					return fmt.Errorf("failed to create error directory: %v", err)
+				}
+
+				for _, failedFile := range m.result.FailedFiles {
+					destPath := filepath.Join(errorDir, filepath.Base(failedFile))
+					if err := copyFile(failedFile, destPath); err != nil {
+						logError(fmt.Errorf("failed to copy %s to error directory: %v", failedFile, err), verbose)
+					}
+				}
 			}
 
 			executionTime := time.Since(startTime)
-			log.Printf("Total execution time: %v\n", executionTime)
-			fmt.Printf("Total execution time: %v\n", executionTime)
+			logInfo(fmt.Sprintf("Total execution time: %v", executionTime), verbose)
 
 			// Write memory profile
-			f, err = os.Create("mem.prof")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer f.Close()
-			runtime.GC() // get up-to-date statistics
-			if err := pprof.WriteHeapProfile(f); err != nil {
-				log.Fatal("could not write memory profile: ", err)
-			}
+			// f, err = os.Create("mem.prof")
+			// if err != nil {
+			// 	log.Fatal(err)
+			// }
+			// defer f.Close()
+			// runtime.GC() // get up-to-date statistics
+			// if err := pprof.WriteHeapProfile(f); err != nil {
+			// 	log.Fatal("could not write memory profile: ", err)
+			// }
 
 			return nil
 		},
 	}
 
+	log.Printf("Running app")
 	err := app.Run(os.Args)
 	if err != nil {
 		log.Fatal(err)
@@ -305,4 +365,34 @@ func promptForWebPQuality() int {
 
 	quality, _ := strconv.Atoi(result)
 	return quality
+}
+
+func logError(err error, verbose bool) {
+	log.Printf("ERROR: %v", err)
+	if verbose {
+		fmt.Printf("ERROR: %v\n", err)
+	}
+}
+
+func logInfo(msg string, verbose bool) {
+	if verbose {
+		fmt.Println(msg)
+	}
+}
+
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	return err
 }

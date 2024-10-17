@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/lipgloss v0.12.1
 	github.com/disintegration/imaging v1.6.2
 	github.com/urfave/cli/v2 v2.27.3
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
