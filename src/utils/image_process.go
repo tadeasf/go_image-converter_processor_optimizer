@@ -36,7 +36,7 @@ func GetImageFiles(root string, recursive bool) ([]string, error) {
 	return files, err
 }
 
-func ProcessFiles(files []string, resultsChan chan<- string, numWorkers int, format, outputDir string, webpQuality int) tea.Cmd {
+func ProcessFiles(files []string, resultsChan chan<- string, numWorkers int, format, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) tea.Cmd {
 	return func() tea.Msg {
 		var wg sync.WaitGroup
 		semaphore := make(chan struct{}, numWorkers)
@@ -48,7 +48,7 @@ func ProcessFiles(files []string, resultsChan chan<- string, numWorkers int, for
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
 
-				err := ConvertImage(file, format, outputDir, webpQuality)
+				err := ConvertImage(file, format, outputDir, webpQuality, fileNameMutex)
 				if err != nil {
 					fmt.Printf("Error processing %s: %v\n", file, err)
 				}
