@@ -3,3 +3,4 @@
 .bin
 *.log
 *.out
+.DS_Store
