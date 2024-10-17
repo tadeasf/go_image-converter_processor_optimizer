@@ -235,7 +235,11 @@ func pathCompleter(d prompt.Document) []prompt.Suggest {
 	var suggestions []prompt.Suggest
 	for _, file := range files {
 		if strings.HasPrefix(file.Name(), base) {
-			suggestions = append(suggestions, prompt.Suggest{Text: filepath.Join(dir, file.Name())})
+			suggestion := filepath.Join(dir, file.Name())
+			if file.IsDir() {
+				suggestion += "/"
+			}
+			suggestions = append(suggestions, prompt.Suggest{Text: suggestion})
 		}
 	}
 	return suggestions

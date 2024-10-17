@@ -7,22 +7,34 @@
 First set  these env variables:
 
 ```sh
-    export CGO_ENABLED=0
-    export GOOS=linux  # or darwin for macOS, windows for Windows
-    export GOARCH=amd64  # or arm64 for ARM-based systems
+    export CGO_ENABLED=1
+    export GOOS=darwin
+    export GOARCH=arm64
+    # export GOOS=linux  # or darwin for macOS, windows for Windows
+    # export GOARCH=amd64  # or arm64 for ARM-based systems
 ```
 
 then you are ready to build your prod binary:
 
 ```sh
+   go build -o go_image_converter \
+     -ldflags="-s -w -linkmode external -extldflags '-static'" \
+     -trimpath \
+     -tags netgo \
+     -a \
+     src/main.go
+```
+
+If you encounter issues with static linking on macOS, you can try building without the static flag:
+
+```sh
     go build -o go_image_converter \
     -ldflags="-s -w" \
     -trimpath \
-    -tags=netgo \
+    -tags netgo \
     -a \
     src/main.go
 ```
-
 
 ### Docs
 
