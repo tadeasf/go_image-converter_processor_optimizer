@@ -4,3 +4,4 @@
 *.log
 *.out
 .DS_Store
+go_image_converter
