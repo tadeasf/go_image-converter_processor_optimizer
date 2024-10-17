@@ -15,6 +15,8 @@ import (
 
 	"strconv"
 
+	"sync"
+
 	"github.com/c-bata/go-prompt"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,31 +25,33 @@ import (
 )
 
 type model struct {
-	spinner     spinner.Model
-	files       []string
-	current     int
-	done        bool
-	resultsChan chan string
-	numWorkers  int
-	format      string
-	outputDir   string
-	webpQuality int
+	spinner       spinner.Model
+	files         []string
+	current       int
+	done          bool
+	resultsChan   chan string
+	numWorkers    int
+	format        string
+	outputDir     string
+	webpQuality   int
+	fileNameMutex *sync.Mutex
 }
 
 type tickMsg time.Time
 
-func initialModel(files []string, numWorkers int, format string, outputDir string, webpQuality int) model {
+func initialModel(files []string, numWorkers int, format string, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	return model{
-		spinner:     s,
-		files:       files,
-		resultsChan: make(chan string, len(files)),
-		numWorkers:  numWorkers,
-		format:      format,
-		outputDir:   outputDir,
-		webpQuality: webpQuality,
+		spinner:       s,
+		files:         files,
+		resultsChan:   make(chan string, len(files)),
+		numWorkers:    numWorkers,
+		format:        format,
+		outputDir:     outputDir,
+		webpQuality:   webpQuality,
+		fileNameMutex: fileNameMutex,
 	}
 }
 
@@ -60,7 +64,7 @@ func tickCmd() tea.Cmd {
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
-		utils.ProcessFiles(m.files, m.resultsChan, m.numWorkers, m.format, m.outputDir, m.webpQuality),
+		utils.ProcessFiles(m.files, m.resultsChan, m.numWorkers, m.format, m.outputDir, m.webpQuality, m.fileNameMutex),
 		tickCmd(),
 	)
 }
@@ -163,7 +167,10 @@ func main() {
 				return err
 			}
 
-			m := initialModel(files, numWorkers, format, outputDir, webpQuality)
+			// Create a mutex for thread-safe file naming
+			fileNameMutex := &sync.Mutex{}
+
+			m := initialModel(files, numWorkers, format, outputDir, webpQuality, fileNameMutex)
 			p := tea.NewProgram(m, tea.WithAltScreen())
 
 			// Open a log file
