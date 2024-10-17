@@ -5,27 +5,27 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"sync"
+	"time"
 
 	"github.com/MaestroError/go-libheif"
 	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
 )
 
-func ConvertAndOptimize(inputPaths []string, format, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) error {
+func ConvertAndOptimize(inputPaths []string, format, outputDir string, webpQuality int, noLimit bool) error {
 	for _, inputPath := range inputPaths {
-		if err := convertAndOptimizeSingleFile(inputPath, format, outputDir, webpQuality, fileNameMutex); err != nil {
+		if err := convertAndOptimizeSingleFile(inputPath, format, outputDir, webpQuality, noLimit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func convertAndOptimizeSingleFile(inputPath, format, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) error {
+func convertAndOptimizeSingleFile(inputPath, format, outputDir string, webpQuality int, noLimit bool) error {
 	var img image.Image
 	var err error
 
@@ -48,10 +48,10 @@ func convertAndOptimizeSingleFile(inputPath, format, outputDir string, webpQuali
 		// Use go-libheif to handle HEIC/HEIF
 		if format == "webp" {
 			// For WebP, we need to convert to JPEG first
-			return convertHEICToWebP(inputPath, outputDir, webpQuality, fileNameMutex)
+			return convertHEICToWebP(inputPath, outputDir, webpQuality, noLimit)
 		}
 		// For other formats, convert directly
-		return convertHEICToFormat(inputPath, format, outputDir, fileNameMutex)
+		return convertHEICToFormat(inputPath, format, outputDir)
 	default:
 		// Use imaging for other formats
 		img, err = imaging.Open(inputPath)
@@ -64,8 +64,10 @@ func convertAndOptimizeSingleFile(inputPath, format, outputDir string, webpQuali
 		return fmt.Errorf("failed to decode image %s: %v", inputPath, err)
 	}
 
-	// Resize the image (only downscale) to long side max 1440
-	img = imaging.Fit(img, 1440, 1440, imaging.Lanczos)
+	if !noLimit {
+		// Resize the image (only downscale) to long side max 1440
+		img = imaging.Fit(img, 1440, 1440, imaging.Lanczos)
+	}
 
 	// Prepare output path
 	outputFileName := filepath.Base(inputPath)
@@ -73,7 +75,7 @@ func convertAndOptimizeSingleFile(inputPath, format, outputDir string, webpQuali
 	outputPath := filepath.Join(outputDir, outputFileName)
 
 	// Get a unique output path
-	outputPath = getUniqueOutputPath(outputPath, fileNameMutex)
+	outputPath = getUniqueOutputPath(outputPath)
 
 	// Create the output directory if it doesn't exist
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -108,13 +110,13 @@ func convertAndOptimizeSingleFile(inputPath, format, outputDir string, webpQuali
 	return nil
 }
 
-func convertHEICToFormat(inputPath, format, outputDir string, fileNameMutex *sync.Mutex) error {
+func convertHEICToFormat(inputPath, format, outputDir string) error {
 	outputFileName := filepath.Base(inputPath)
 	outputFileName = strings.TrimSuffix(outputFileName, filepath.Ext(outputFileName)) + "." + format
 	outputPath := filepath.Join(outputDir, outputFileName)
 
 	// Get a unique output path
-	outputPath = getUniqueOutputPath(outputPath, fileNameMutex)
+	outputPath = getUniqueOutputPath(outputPath)
 
 	switch format {
 	case "jpg":
@@ -126,7 +128,7 @@ func convertHEICToFormat(inputPath, format, outputDir string, fileNameMutex *syn
 	}
 }
 
-func convertHEICToWebP(inputPath, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) error {
+func convertHEICToWebP(inputPath, outputDir string, webpQuality int, noLimit bool) error {
 	// Create a temporary directory
 	tempDir, err := os.MkdirTemp("", "heic_conversion")
 	if err != nil {
@@ -154,8 +156,10 @@ func convertHEICToWebP(inputPath, outputDir string, webpQuality int, fileNameMut
 		return fmt.Errorf("failed to decode temporary JPEG: %v", err)
 	}
 
-	// Resize the image
-	img = imaging.Fit(img, 1440, 1440, imaging.Lanczos)
+	// Resize the image if noLimit is false
+	if !noLimit {
+		img = imaging.Fit(img, 1440, 1440, imaging.Lanczos)
+	}
 
 	// Prepare output path for WebP
 	outputFileName := filepath.Base(inputPath)
@@ -163,7 +167,7 @@ func convertHEICToWebP(inputPath, outputDir string, webpQuality int, fileNameMut
 	outputPath := filepath.Join(outputDir, outputFileName)
 
 	// Get a unique output path
-	outputPath = getUniqueOutputPath(outputPath, fileNameMutex)
+	outputPath = getUniqueOutputPath(outputPath)
 
 	// Create the output file
 	f, err := os.Create(outputPath)
@@ -182,25 +186,29 @@ func convertHEICToWebP(inputPath, outputDir string, webpQuality int, fileNameMut
 }
 
 // ConvertImage is now just an alias for convertAndOptimizeSingleFile
-func ConvertImage(inputPath, format, outputDir string, webpQuality int, fileNameMutex *sync.Mutex) error {
-	return convertAndOptimizeSingleFile(inputPath, format, outputDir, webpQuality, fileNameMutex)
+func ConvertImage(inputPath, format, outputDir string, webpQuality int, verbose bool, noLimit bool) error {
+	log.Printf("Starting conversion of %s to %s", inputPath, format)
+	err := convertAndOptimizeSingleFile(inputPath, format, outputDir, webpQuality, noLimit)
+	if err != nil {
+		log.Printf("Error converting %s: %v", inputPath, err)
+		LogError(err, verbose)
+	} else {
+		log.Printf("Successfully converted %s", inputPath)
+	}
+	return err
 }
 
-func getUniqueOutputPath(outputPath string, fileNameMutex *sync.Mutex) string {
+func getUniqueOutputPath(outputPath string) string {
 	dir := filepath.Dir(outputPath)
 	ext := filepath.Ext(outputPath)
 	name := strings.TrimSuffix(filepath.Base(outputPath), ext)
 
-	counter := 1
-	for {
-		fileNameMutex.Lock()
-		_, err := os.Stat(outputPath)
-		fileNameMutex.Unlock()
+	// Get current Unix timestamp
+	timestamp := time.Now().Unix()
 
-		if os.IsNotExist(err) {
-			return outputPath
-		}
-		outputPath = filepath.Join(dir, fmt.Sprintf("%s_%d%s", name, counter, ext))
-		counter++
-	}
+	// Create a new filename with the timestamp
+	newName := fmt.Sprintf("%s_%d%s", name, timestamp, ext)
+	outputPath = filepath.Join(dir, newName)
+
+	return outputPath
 }
