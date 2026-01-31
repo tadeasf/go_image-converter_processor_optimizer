@@ -5,7 +5,7 @@ go 1.22.4
 require (
 	github.com/MaestroError/go-libheif v0.3.0
 	github.com/c-bata/go-prompt v0.2.6
-	github.com/chai2010/webp v1.1.1
+	github.com/chai2010/webp v1.4.0
 	github.com/charmbracelet/bubbles v0.18.0
 	github.com/charmbracelet/bubbletea v0.26.6
 	github.com/charmbracelet/lipgloss v0.12.1
